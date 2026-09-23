@@ -1,0 +1,52 @@
+# Publicação em servidor próprio (VPS): site + PostgreSQL + uploads persistentes.
+#
+#   1) cp .env.example .env   e preencha (AUTH_SECRET, ADMIN_*, APP_URL, POSTGRES_PASSWORD, PAYMENT_PROVIDER=manual…)
+#   2) docker compose up -d --build
+#   3) docker compose run --rm migrate npx prisma migrate deploy && docker compose run --rm migrate npm run db:seed
+#   4) Coloque um proxy HTTPS (Caddy/Nginx/Traefik) na frente da porta 3000 e use APP_URL=https://seudominio.com.br
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ep
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?defina POSTGRES_PASSWORD no .env}
+      POSTGRES_DB: ep_digital
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ep -d ep_digital"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  migrate:
+    build:
+      context: .
+      target: migrate
+    profiles: ["tools"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://ep:${POSTGRES_PASSWORD}@db:5432/ep_digital?schema=public
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://ep:${POSTGRES_PASSWORD}@db:5432/ep_digital?schema=public
+      NODE_ENV: production
+    ports:
+      - "3000:3000"
+    volumes:
+      - uploads:/data/storage
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  uploads:

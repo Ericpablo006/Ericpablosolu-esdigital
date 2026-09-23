@@ -1,0 +1,499 @@
+// Eric Pablo Soluções Digitais — modelo de dados (PostgreSQL)
+// Valores monetários são guardados em CENTAVOS (Int) para evitar erros de ponto flutuante.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────── Enums ─────────────────────────
+
+enum Role {
+  CUSTOMER
+  ADMIN
+  MANAGER
+}
+
+enum QuoteType {
+  SITE
+  ECOMMERCE
+  LANDING
+  SYSTEM
+  APP
+  DESIGN
+  MARKETING
+  OTHER
+}
+
+enum QuoteStatus {
+  NEW
+  ANALYZING
+  SENT
+  APPROVED
+  REJECTED
+}
+
+enum ProjectStatus {
+  QUOTE
+  AWAITING_PAYMENT
+  IN_DEVELOPMENT
+  IN_REVIEW
+  DONE
+}
+
+enum OrderStatus {
+  PENDING
+  PAID
+  CANCELED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  PIX
+  CARD
+  BOLETO
+  CASH
+  TRANSFER
+  OTHER
+}
+
+enum PaymentStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REFUNDED
+}
+
+enum BillingType {
+  ONE_TIME
+  MONTHLY
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+}
+
+enum CouponType {
+  PERCENT
+  FIXED
+}
+
+// ───────────────────────── Usuários ─────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  whatsapp     String?
+  passwordHash String
+  role         Role     @default(CUSTOMER)
+  active       Boolean  @default(true)
+  /// Incrementado ao trocar a senha / desativar: invalida sessões antigas.
+  tokenVersion Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  customer      Customer?
+  admin         Admin?
+  orders        Order[]
+  quotes        Quote[]
+  projects      Project[]
+  tickets       SupportTicket[]
+  messages      Message[]
+  downloads     Download[]
+  reviews       ProductReview[]
+  notifications Notification[]
+  resetTokens   PasswordResetToken[]
+  receipts      Receipt[]
+  payments      Payment[]
+
+  @@index([role])
+}
+
+model Customer {
+  id       String  @id @default(cuid())
+  userId   String  @unique
+  user     User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cpfCnpj  String?
+  company  String?
+  notes    String? // anotações internas (visíveis só ao admin)
+  createdAt DateTime @default(now())
+}
+
+model Admin {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String?
+  createdAt DateTime @default(now())
+}
+
+model PasswordResetToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 do token enviado por e-mail (o token em si nunca é salvo).
+  tokenHash String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+// ───────────────────────── Catálogo ─────────────────────────
+
+model Product {
+  id              String   @id @default(cuid())
+  slug            String   @unique
+  name            String
+  shortDescription String?
+  description     String
+  features        String[]
+  includes        String[]
+  requirements    String[]
+  category        String
+  priceCents      Int
+  /// Preço promocional (opcional). Ativo enquanto não expirar.
+  promoPriceCents Int?
+  promoEndsAt     DateTime?
+  images          String[]
+  /// Chave do arquivo privado (armazenamento em storage/private).
+  fileKey         String?
+  fileName        String?
+  /// Alternativa ao arquivo: link externo de entrega (Drive, Dropbox, repositório…).
+  externalUrl     String?
+  active          Boolean  @default(true)
+  featured        Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  orderItems OrderItem[]
+  reviews    ProductReview[]
+  downloads  Download[]
+
+  @@index([active, category])
+}
+
+model ProductReview {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@unique([productId, userId])
+}
+
+model Service {
+  id               String    @id @default(cuid())
+  slug             String    @unique
+  name             String
+  /// Rótulo curto usado nos cards da home (opcional).
+  homeLabel        String?
+  shortDescription String
+  description      String
+  benefits         String[]
+  deliveryTime     String?
+  /// null = "Solicite orçamento"
+  startingPriceCents Int?
+  icon             String    @default("Globe")
+  image            String?
+  quoteType        QuoteType @default(OTHER)
+  featured         Boolean   @default(false)
+  active           Boolean   @default(true)
+  sortOrder        Int       @default(0)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  projects Project[]
+}
+
+model PortfolioItem {
+  id           String   @id @default(cuid())
+  title        String
+  client       String
+  category     String
+  description  String
+  technologies String[]
+  image        String?
+  url          String?
+  active       Boolean  @default(true)
+  sortOrder    Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Plan {
+  id          String      @id @default(cuid())
+  name        String
+  description String
+  priceCents  Int
+  billing     BillingType @default(ONE_TIME)
+  features    String[]
+  highlighted Boolean     @default(false)
+  active      Boolean     @default(true)
+  sortOrder   Int         @default(0)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+// ───────────────────────── Vendas ─────────────────────────
+
+model Coupon {
+  id            String     @id @default(cuid())
+  code          String     @unique
+  type          CouponType
+  /// PERCENT: 1–100 · FIXED: centavos
+  value         Int
+  minOrderCents Int        @default(0)
+  maxUses       Int?
+  usedCount     Int        @default(0)
+  expiresAt     DateTime?
+  active        Boolean    @default(true)
+  createdAt     DateTime   @default(now())
+
+  orders Order[]
+}
+
+model Order {
+  id            String      @id @default(cuid())
+  number        Int         @unique @default(autoincrement())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  status        OrderStatus @default(PENDING)
+  subtotalCents Int
+  discountCents Int         @default(0)
+  totalCents    Int
+  couponId      String?
+  coupon        Coupon?     @relation(fields: [couponId], references: [id], onDelete: SetNull)
+  // Dados do comprador no momento da compra
+  buyerName     String
+  buyerDocument String
+  buyerEmail    String
+  buyerWhatsapp String
+  createdAt     DateTime    @default(now())
+  paidAt        DateTime?
+  updatedAt     DateTime    @updatedAt
+
+  items     OrderItem[]
+  payments  Payment[]
+  downloads Download[]
+
+  @@index([userId, createdAt])
+  @@index([status])
+}
+
+model OrderItem {
+  id             String  @id @default(cuid())
+  orderId        String
+  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId      String?
+  product        Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  name           String
+  unitPriceCents Int
+  quantity       Int
+
+  @@index([orderId])
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  orderId     String?
+  order       Order?        @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  projectId   String?
+  project     Project?      @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  userId      String?
+  user        User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  description String?
+  amountCents Int
+  method      PaymentMethod
+  status      PaymentStatus @default(PENDING)
+  /// Identificador do provedor de pagamento (manual, sandbox, mercadopago…)
+  provider    String        @default("manual")
+  providerRef String?
+  /// Dados do provedor necessários para exibir a cobrança (ex.: payload PIX).
+  providerData Json?
+  paidAt      DateTime?
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  @@index([status, paidAt])
+  @@index([orderId])
+  @@index([projectId])
+  @@unique([provider, providerRef])
+}
+
+model Download {
+  id             String    @id @default(cuid())
+  userId         String
+  user           User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  orderId        String
+  order          Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  downloadCount  Int       @default(0)
+  maxDownloads   Int       @default(10)
+  lastDownloadAt DateTime?
+  createdAt      DateTime  @default(now())
+
+  @@unique([orderId, productId])
+  @@index([userId])
+}
+
+// ───────────────────────── Serviços & projetos ─────────────────────────
+
+model Quote {
+  id               String      @id @default(cuid())
+  number           Int         @unique @default(autoincrement())
+  userId           String?
+  user             User?       @relation(fields: [userId], references: [id], onDelete: SetNull)
+  type             QuoteType
+  objective        String
+  deadline         String
+  hasDomain        Boolean     @default(false)
+  hasHosting       Boolean     @default(false)
+  hasBrand         Boolean     @default(false)
+  wantsMaintenance Boolean     @default(false)
+  wantsWhatsapp    Boolean     @default(false)
+  wantsPayments    Boolean     @default(false)
+  wantsAdminArea   Boolean     @default(false)
+  description      String
+  name             String
+  company          String?
+  whatsapp         String
+  email            String
+  status           QuoteStatus @default(NEW)
+  estimatedCents   Int?
+  adminNotes       String?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  projects Project[]
+
+  @@index([status, createdAt])
+  @@index([email])
+}
+
+model Project {
+  id          String        @id @default(cuid())
+  title       String
+  description String?
+  userId      String
+  user        User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceId   String?
+  service     Service?      @relation(fields: [serviceId], references: [id], onDelete: SetNull)
+  quoteId     String?
+  quote       Quote?        @relation(fields: [quoteId], references: [id], onDelete: SetNull)
+  status      ProjectStatus @default(QUOTE)
+  progress    Int           @default(0)
+  deadline    DateTime?
+  valueCents  Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  payments Payment[]
+  tickets  SupportTicket[]
+
+  @@index([userId])
+  @@index([status])
+}
+
+model Receipt {
+  id            String        @id @default(cuid())
+  number        Int           @unique @default(autoincrement())
+  userId        String?
+  user          User?         @relation(fields: [userId], references: [id], onDelete: SetNull)
+  customerName  String
+  customerDocument String?
+  description   String
+  amountCents   Int
+  method        PaymentMethod
+  issuedAt      DateTime
+  createdAt     DateTime      @default(now())
+}
+
+// ───────────────────────── Suporte ─────────────────────────
+
+model SupportTicket {
+  id        String       @id @default(cuid())
+  number    Int          @unique @default(autoincrement())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  projectId String?
+  project   Project?     @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  subject   String
+  status    TicketStatus @default(OPEN)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  messages Message[]
+
+  @@index([userId, updatedAt])
+  @@index([status])
+}
+
+model Message {
+  id        String        @id @default(cuid())
+  ticketId  String
+  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User          @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  isStaff   Boolean       @default(false)
+  body      String
+  createdAt DateTime      @default(now())
+
+  @@index([ticketId, createdAt])
+}
+
+/// Mensagens enviadas pelo formulário de contato do site.
+model ContactMessage {
+  id        String   @id @default(cuid())
+  name      String
+  whatsapp  String
+  email     String
+  subject   String
+  message   String
+  handled   Boolean  @default(false)
+  createdAt DateTime @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String?
+  href      String?
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read, createdAt])
+}
+
+// ───────────────────────── Sistema ─────────────────────────
+
+/// Configurações editáveis pelo painel (chave → valor).
+model Setting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
+
+/// Contadores do rate limiting (compartilhado entre instâncias).
+model RateLimit {
+  key     String   @id
+  count   Int
+  resetAt DateTime
+
+  @@index([resetAt])
+}
