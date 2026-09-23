@@ -10,7 +10,8 @@ const root = () => path.resolve(uploadDir());
 const publicDir = () => path.join(root(), "public");
 const privateDir = () => path.join(root(), "private");
 
-const useBlob = () => !!process.env.BLOB_READ_WRITE_TOKEN;
+// BLOB_READ_WRITE_TOKEN (token fixo) ou BLOB_STORE_ID (autenticação por OIDC, forma mais nova da Vercel).
+const useBlob = () => !!(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
 // Import tardio: assim o pacote só é necessário em runtime quando a Blob está realmente em uso.
 const blob = () => import("@vercel/blob");
 
