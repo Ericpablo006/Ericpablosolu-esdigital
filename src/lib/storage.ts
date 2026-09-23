@@ -1,5 +1,10 @@
-// Armazenamento de arquivos: usa Vercel Blob quando BLOB_READ_WRITE_TOKEN está definido (Vercel,
-// disco sem persistência entre execuções) e o disco local nos demais casos (VPS/Docker/dev).
+// Armazenamento de arquivos: usa Vercel Blob quando disponível (Vercel, disco sem persistência
+// entre execuções) e o disco local nos demais casos (VPS/Docker/dev).
+//
+// Tudo é guardado com access:"private" na Blob (a loja pode vir configurada como private-only, e
+// isso não muda nada pra gente: as imagens "públicas" e os arquivos privados dos produtos já são
+// sempre servidos pelas NOSSAS rotas — /uploads/[...] e /api/downloads/[id] — nunca pelo link da
+// Blob direto), então o nível de acesso real continua sendo decidido pelo nosso próprio código.
 import { randomUUID } from "node:crypto";
 import { promises as fs, createReadStream } from "node:fs";
 import path from "node:path";
@@ -14,13 +19,6 @@ const privateDir = () => path.join(root(), "private");
 const useBlob = () => !!(process.env.BLOB_READ_WRITE_TOKEN || process.env.BLOB_STORE_ID);
 // Import tardio: assim o pacote só é necessário em runtime quando a Blob está realmente em uso.
 const blob = () => import("@vercel/blob");
-
-/** Localiza a URL do blob por caminho exato (o SDK só permite ler/apagar por URL, não por nome). */
-async function blobUrlFor(pathname: string): Promise<string | null> {
-  const { list } = await blob();
-  const { blobs } = await list({ prefix: pathname, limit: 1 });
-  return blobs.find((b) => b.pathname === pathname)?.url ?? null;
-}
 
 const MB = 1024 * 1024;
 export const MAX_IMAGE_BYTES = 5 * MB;
@@ -47,7 +45,7 @@ export async function saveImage(file: File): Promise<{ url: string }> {
   const name = `${randomUUID()}.${type.ext}`;
   if (useBlob()) {
     const { put } = await blob();
-    await put(`public/${name}`, buf, { access: "public", addRandomSuffix: false, contentType: type.mime });
+    await put(`public/${name}`, buf, { access: "private", addRandomSuffix: false, contentType: type.mime });
   } else {
     await fs.mkdir(publicDir(), { recursive: true });
     await fs.writeFile(path.join(publicDir(), name), buf);
@@ -65,9 +63,7 @@ export async function savePrivateFile(file: File): Promise<{ key: string; name: 
   const key = `${randomUUID()}.${ext}`;
   if (useBlob()) {
     const { put } = await blob();
-    // Sem um nível "privado" na Blob: a proteção vem da própria rota de download (login + dono do
-    // pedido + pagamento confirmado + limite de baixas) — o link da Blob nunca é exposto ao cliente.
-    await put(`private/${key}`, Buffer.from(await file.arrayBuffer()), { access: "public", addRandomSuffix: false, contentType: "application/octet-stream" });
+    await put(`private/${key}`, Buffer.from(await file.arrayBuffer()), { access: "private", addRandomSuffix: false, contentType: "application/octet-stream" });
   } else {
     await fs.mkdir(privateDir(), { recursive: true });
     await fs.writeFile(path.join(privateDir(), key), Buffer.from(await file.arrayBuffer()));
@@ -85,10 +81,10 @@ export function publicMime(name: string): string | null {
 export async function readPublicFile(name: string): Promise<Buffer | null> {
   if (!PUBLIC_NAME.test(name)) return null; // bloqueia path traversal
   if (useBlob()) {
-    const url = await blobUrlFor(`public/${name}`);
-    if (!url) return null;
-    const res = await fetch(url);
-    return res.ok ? Buffer.from(await res.arrayBuffer()) : null;
+    const { get } = await blob();
+    const res = await get(`public/${name}`, { access: "private" }).catch(() => null);
+    if (!res || !res.stream) return null;
+    return Buffer.from(await new Response(res.stream).arrayBuffer());
   }
   try {
     return await fs.readFile(path.join(publicDir(), name));
@@ -100,11 +96,10 @@ export async function readPublicFile(name: string): Promise<Buffer | null> {
 export async function openPrivateFile(key: string): Promise<{ stream: ReadableStream; size: number } | null> {
   if (!PRIVATE_KEY.test(key)) return null;
   if (useBlob()) {
-    const url = await blobUrlFor(`private/${key}`);
-    if (!url) return null;
-    const res = await fetch(url);
-    if (!res.ok || !res.body) return null;
-    return { stream: res.body, size: Number(res.headers.get("content-length") || 0) };
+    const { get } = await blob();
+    const res = await get(`private/${key}`, { access: "private" }).catch(() => null);
+    if (!res || !res.stream) return null;
+    return { stream: res.stream, size: res.blob.size ?? 0 };
   }
   const full = path.join(privateDir(), key);
   try {
@@ -122,9 +117,9 @@ export async function deleteStoredFile(ref: string | null | undefined) {
       const { del } = await blob();
       if (ref.startsWith("/uploads/")) {
         const name = ref.slice("/uploads/".length);
-        if (PUBLIC_NAME.test(name)) { const url = await blobUrlFor(`public/${name}`); if (url) await del(url); }
+        if (PUBLIC_NAME.test(name)) await del(`public/${name}`).catch(() => {});
       } else if (PRIVATE_KEY.test(ref)) {
-        const url = await blobUrlFor(`private/${ref}`); if (url) await del(url);
+        await del(`private/${ref}`).catch(() => {});
       }
       return;
     }
