@@ -46,7 +46,8 @@ await check("download bloqueado sem login", () => expectStatus("/api/downloads/q
 await check("recibo PDF bloqueado sem login", () => expectStatus("/api/receipts/x/pdf", 401));
 await check("webhook sem assinatura é rejeitado", () => expectStatus("/api/webhooks/payments/webhook", [401, 404], { method: "POST", body: "{}" }));
 await check("webhook de provedor inexistente = 404", () => expectStatus("/api/webhooks/payments/nao-existe", 404, { method: "POST", body: "{}" }));
-await check("uploads: path traversal bloqueado", () => expectStatus("/uploads/..%2f..%2f.env", 404));
+// A Vercel às vezes barra "%2f" cru na borda com 400 antes de chegar no Next.js (mesmo efeito prático: nada vaza).
+await check("uploads: path traversal bloqueado", () => expectStatus("/uploads/..%2f..%2f.env", [400, 404]));
 
 console.log("\nSegurança");
 await check("cabeçalhos de segurança", async () => {
